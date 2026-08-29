@@ -231,9 +231,11 @@ input[type=file] { display: none; }
 
 <h1>Мой трекер</h1>
 <div class="subtitle" id="pageSubtitle">Привычки и финансы в одном месте</div>
+<div class="subtitle" id="debugId" style="margin-top:-14px; opacity:0.5; font-size:11px"></div>
 
 <!-- HABITS VIEW -->
 <div class="view active" id="habits">
+  <div class="card" id="quoteCard" style="cursor:pointer; border-left:3px solid var(--amber)" onclick="renderQuote(); haptic('light')"></div>
   <div class="card" id="habitsList"><div class="empty">Пока нет привычек — добавь первую</div></div>
   <button class="add-btn" onclick="openHabitModal()">+ Добавить привычку</button>
 </div>
@@ -426,16 +428,43 @@ const PRESET_HABITS = [
   { name: 'Планирование дня', icon: '🗓️' }
 ];
 
-// Только владелец видит настройки/бэкапы
+// Мотивационные цитаты
+const QUOTES = [
+  { text: 'Большинство людей останавливаются, когда чувствуют боль. Настоящий рост начинается после этого.', author: 'David Goggins' },
+  { text: 'Не жди мотивации. Дисциплина — это делать то, что нужно, даже когда не хочется.', author: 'David Goggins' },
+  { text: 'Разум сдаётся первым — тело способно на гораздо большее.', author: 'David Goggins' },
+  { text: 'Каждый день — это шанс стать чуть жёстче, чем вчера.', author: 'David Goggins' },
+  { text: 'Никто не придёт и не спасёт тебя. Встань и сделай это сам.', author: 'David Goggins' },
+  { text: 'Побеждает не самый талантливый, а тот, кто не сдаётся.', author: 'Arnold Schwarzenegger' },
+  { text: 'Дисциплина — это выбор между тем, что хочешь сейчас, и тем, что хочешь больше всего.', author: 'Abraham Lincoln' },
+  { text: 'Успех — это сумма маленьких усилий, повторяемых день за днём.', author: 'Robert Collier' },
+  { text: 'Тяжело в учении — легко в бою. Тяжело сегодня — легко завтра.', author: 'народная мудрость' },
+  { text: 'Ты не встретишь монстра в зеркале, если сам не станешь тем, кто сдался.', author: 'David Goggins' },
+  { text: 'Комфорт — враг прогресса.', author: 'David Goggins' },
+  { text: 'Единственная тренировка, которую ты пожалеешь — та, что пропустил.', author: 'неизвестен' }
+];
+function getRandomQuote() { return QUOTES[Math.floor(Math.random() * QUOTES.length)]; }
+function renderQuote() {
+  const el = document.getElementById('quoteCard');
+  if (!el) return;
+  const q = getRandomQuote();
+  el.innerHTML = `<div style="font-size:14px; line-height:1.5; font-weight:600">"${q.text}"</div><div style="margin-top:8px; font-size:12px; color:var(--hint); font-weight:700">— ${q.author}</div>`;
+}
 const OWNER_ID = 1085883981;
 function isOwner() {
   const uid = tg?.initDataUnsafe?.user?.id;
   return Number(uid) === OWNER_ID;
 }
-// Применяем сразу, не дожидаясь загрузки данных из хранилища
-if (!isOwner()) {
-  document.getElementById('navSettings').style.display = 'none';
+function applySettingsVisibility() {
+  const el = document.getElementById('navSettings');
+  el.style.display = isOwner() ? '' : 'none';
 }
+// Применяем сразу, и ещё раз чуть позже — на случай если Telegram
+// отдаёт initDataUnsafe с задержкой в некоторых клиентах
+applySettingsVisibility();
+setTimeout(applySettingsVisibility, 300);
+setTimeout(applySettingsVisibility, 1000);
+document.getElementById('debugId').textContent = 'ID: ' + (tg?.initDataUnsafe?.user?.id ?? 'нет данных');
 
 async function init() {
   const h = await storageGet('habits');
@@ -450,6 +479,7 @@ async function init() {
     if (hb.order === undefined) hb.order = i;
   });
   renderHabits();
+  renderQuote();
   renderFinance();
   renderStats();
 }
