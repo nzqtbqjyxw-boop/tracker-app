@@ -280,6 +280,12 @@ input[type=file] { display: none; }
       <div class="stat-label">Лучший стрик</div>
     </div>
   </div>
+  <div class="section-label">Тренд выполнения (14 дней)</div>
+  <div class="card" id="trendChart"><div class="empty">Нет данных</div></div>
+  <div class="section-label">Достижения</div>
+  <div class="card" id="achievementsCard"><div class="empty">Пока нет достижений</div></div>
+  <div class="section-label">Баланс по месяцам</div>
+  <div class="card" id="balanceTrend"><div class="empty">Нет данных</div></div>
   <div class="section-label">Топ категорий трат (30 дн.)</div>
   <div class="card" id="topCategories"><div class="empty">Нет данных</div></div>
   <div class="section-label">Расходы по категориям</div>
@@ -290,12 +296,10 @@ input[type=file] { display: none; }
 <div class="view" id="settings">
   <div class="section-label">Данные</div>
   <button class="settings-btn" onclick="exportData()">📤 Экспортировать бэкап (JSON)</button>
-  <button class="settings-btn" onclick="document.getElementById('importFile').click()">📥 Импортировать бэкап</button>
-  <input type="file" id="importFile" accept="application/json">
   <button class="settings-btn danger" onclick="confirmReset()">🗑 Сбросить все данные</button>
   <div class="section-label">О приложении</div>
   <div class="card" style="font-size:13px; color:var(--hint); line-height:1.5">
-    Трекер привычек и финансов. Данные хранятся в Telegram CloudStorage — у каждого пользователя бота своё, отдельное хранилище.
+    Трекер привычек и финансов. Данные хранятся на сервере (SQLite), доступ у каждого пользователя бота отдельный.
   </div>
 </div>
 
@@ -329,6 +333,20 @@ input[type=file] { display: none; }
     <div class="freq-input" id="freqInputWrap">
       <span style="font-size:13px; color:var(--hint)">Раз в неделю:</span>
       <input type="number" id="habitFreqInput" min="1" max="7" value="3">
+    </div>
+    <div class="field-label">Цвет</div>
+    <div class="color-picker" id="colorPicker"></div>
+    <div class="field-label">Напоминание</div>
+    <div class="reminder-row">
+      <span style="font-size:14px">Присылать напоминание в боте</span>
+      <label class="switch">
+        <input type="checkbox" id="reminderToggle" onchange="onReminderToggle()">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="reminder-fields" id="reminderFields">
+      <input type="time" id="reminderTimeInput" value="09:00">
+      <textarea id="reminderTextInput" placeholder="Текст напоминания (например: Не забудь почистить зубы!)"></textarea>
     </div>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeModal('habitOverlay')">Отмена</button>
@@ -374,18 +392,47 @@ if (tg) { tg.ready(); tg.expand(); }
 function haptic(type) { tg?.HapticFeedback?.impactOccurred(type || 'light'); }
 function hapticNotify(type) { tg?.HapticFeedback?.notificationOccurred(type || 'success'); }
 
-// ---------- Storage ----------
-function storageGet(key) {
-  return new Promise((resolve) => {
-    if (tg?.CloudStorage) tg.CloudStorage.getItem(key, (err, value) => resolve(err ? null : value));
-    else resolve(localStorage.getItem(key));
-  });
+// ---------- API (бэкенд на Replit: SQLite + REST) ----------
+// API_BASE указывает на тот же хост, где крутится bot.py (HTTP-сервер на PORT)
+const API_BASE = window.location.origin.includes('github.io')
+  ? 'https://tracker-app--rlunockin.replit.app'
+  : window.location.origin;
+
+function getChatId() {
+  // 1) из query-параметра ?uid=..., который добавляет bot.py в ссылку
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = params.get('uid');
+  if (fromQuery) return fromQuery;
+  // 2) fallback — из Telegram initDataUnsafe, если доступно
+  const fromTg = tg?.initDataUnsafe?.user?.id;
+  if (fromTg) return String(fromTg);
+  // 3) fallback — сохранённый локально (на случай проблем с initData)
+  return localStorage.getItem('chat_id_fallback');
 }
-function storageSet(key, value) {
-  return new Promise((resolve) => {
-    if (tg?.CloudStorage) tg.CloudStorage.setItem(key, value, () => resolve());
-    else { localStorage.setItem(key, value); resolve(); }
+const CHAT_ID = getChatId();
+
+async function apiGet(path) {
+  const res = await fetch(`${API_BASE}${path}`);
+  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
+  return res.json();
+}
+async function apiPost(path, body) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
+  return res.json();
+}
+async function apiDelete(path) {
+  const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
+  return res.json();
+}
+async function loadState() {
+  if (!CHAT_ID) return { habits: [], transactions: [], budgets: {} };
+  return apiGet(`/api/state?uid=${CHAT_ID}`);
 }
 
 let habits = [];
@@ -399,12 +446,25 @@ let currentTxType = 'income';
 let selectedCatIcon = '🛒';
 let currentPeriod = 'week';
 let editingBudgetCat = null;
+let selectedReminderEnabled = false;
+let selectedReminderTime = '09:00';
+let selectedColor = HABIT_COLOR_PALETTE ? '#f5a623' : '#f5a623';
 
 const HABIT_EMOJIS = ['✅','💧','🏃','📖','🧘','💤','🚭','🥗','💊','✍️','🎯','🌱'];
 const CAT_ICONS = ['🛒','🍔','🚕','🏠','🎬','👕','💊','📱','✈️','🎁','💡','📦'];
 const CHART_COLORS = ['#f5a623','#2dd4bf','#fb7185','#a78bfa','#60a5fa','#facc15'];
 const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
 const PRIORITY_TITLES = { high: '🔴 Высокий приоритет', medium: '🟡 Средний приоритет', low: '⚪ Низкий приоритет' };
+const HABIT_COLOR_PALETTE = ['#f5a623','#2dd4bf','#fb7185','#a78bfa','#60a5fa','#a3e635','#f472b6','#fbbf24'];
+
+// Достижения (бейджи) по стрику
+const ACHIEVEMENTS = [
+  { days: 7, label: '7 дней', icon: '🔥' },
+  { days: 14, label: '2 недели', icon: '⚡' },
+  { days: 30, label: '30 дней', icon: '🏆' },
+  { days: 100, label: '100 дней', icon: '💎' },
+  { days: 365, label: 'Год', icon: '👑' }
+];
 
 // Готовые варианты привычек для автоподбора
 const PRESET_HABITS = [
@@ -427,6 +487,7 @@ const PRESET_HABITS = [
   { name: 'Позвонить родителям', icon: '📞' },
   { name: 'Планирование дня', icon: '🗓️' }
 ];
+
 
 // Мотивационные цитаты
 const QUOTES = [
@@ -496,27 +557,28 @@ applySettingsVisibility();
 setTimeout(applySettingsVisibility, 300);
 setTimeout(applySettingsVisibility, 1000);
 document.getElementById('debugId').textContent =
-  'tg: ' + (tg ? 'да' : 'НЕТ') +
-  ' | initData длина: ' + (tg?.initData?.length ?? 0) +
-  ' | user: ' + JSON.stringify(tg?.initDataUnsafe?.user ?? null) +
-  ' | platform: ' + (tg?.platform ?? '?') +
-  ' | version: ' + (tg?.version ?? '?');
+  'CHAT_ID: ' + (CHAT_ID ?? 'НЕТ') +
+  ' | tg: ' + (tg ? 'да' : 'НЕТ') +
+  ' | user: ' + JSON.stringify(tg?.initDataUnsafe?.user ?? null);
 document.getElementById('debugId').addEventListener('click', tryUnlockOwner);
 document.getElementById('debugId').style.cursor = 'pointer';
 document.getElementById('debugId').title = 'Тапни для входа как владелец';
 
 async function init() {
-  const h = await storageGet('habits');
-  const t = await storageGet('transactions');
-  const b = await storageGet('budgets');
-  habits = h ? JSON.parse(h) : [];
-  transactions = t ? JSON.parse(t) : [];
-  budgets = b ? JSON.parse(b) : {};
-  // миграция старых привычек без приоритета/порядка
-  habits.forEach((hb, i) => {
-    if (!hb.priority) hb.priority = 'medium';
-    if (hb.order === undefined) hb.order = i;
-  });
+  if (!CHAT_ID) {
+    document.getElementById('debugId').textContent += ' | НЕТ CHAT_ID — данные не загрузятся';
+    renderHabits(); renderQuote(); renderFinance(); renderStats();
+    return;
+  }
+  try {
+    const state = await loadState();
+    habits = state.habits || [];
+    transactions = state.transactions || [];
+    budgets = state.budgets || {};
+  } catch (e) {
+    console.error(e);
+    showToast('Не удалось загрузить данные с сервера');
+  }
   renderHabits();
   renderQuote();
   renderFinance();
@@ -583,6 +645,19 @@ function buildHeatmap(habit) {
   }
   return cells;
 }
+function getEarnedBadge(streak) {
+  let best = null;
+  for (const a of ACHIEVEMENTS) if (streak >= a.days) best = a;
+  return best;
+}
+function checkNewAchievement(habit) {
+  const streak = calcStreak(habit);
+  const match = ACHIEVEMENTS.find(a => a.days === streak);
+  if (match) {
+    setTimeout(() => showToast(`${match.icon} Достижение: ${match.label} подряд — ${habit.name}!`), 600);
+    hapticNotify('success');
+  }
+}
 function sortedHabitIndexes() {
   // сортировка: сначала по приоритету, внутри приоритета — по ручному order
   return habits.map((h, i) => i).sort((a, b) => {
@@ -606,16 +681,17 @@ function renderHabits() {
       lastPriority = h.priority;
     }
     const goalText = h.goal === 'weekly' ? `${weekCount(h)}/${h.freq} на неделе` : `🔥 ${calcStreak(h)} дн. подряд`;
+    const badge = getEarnedBadge(calcStreak(h));
     html += `
-    <div class="habit-item" data-index="${i}">
+    <div class="habit-item" data-index="${i}" style="--habit-color:${h.color || '#f5a623'}">
       <div class="drag-handle" data-drag="${i}">☰</div>
       <div class="habit-main">
         <div class="habit-top">
           <div class="habit-info">
             <div class="habit-icon">${h.icon}</div>
             <div style="min-width:0">
-              <div class="habit-name">${h.name}</div>
-              <div class="habit-meta"><span class="priority-dot p-${h.priority}"></span>${goalText}</div>
+              <div class="habit-name">${h.name} ${badge ? badge.icon : ''}</div>
+              <div class="habit-meta"><span class="priority-dot p-${h.priority}"></span>${goalText}${h.reminderEnabled ? ' · 🔔 ' + h.reminderTime : ''}</div>
             </div>
           </div>
           <div class="habit-actions">
@@ -662,8 +738,16 @@ function attachDragHandlers() {
         // пересчитываем order только внутри той же группы приоритета
         const newIndexOrder = Array.from(list.querySelectorAll('.habit-item')).map(el => parseInt(el.dataset.index));
         newIndexOrder.forEach((habitIdx, pos) => { habits[habitIdx].order = pos; });
-        storageSet('habits', JSON.stringify(habits));
         renderHabits();
+        // синхронизируем новый порядок с сервером
+        newIndexOrder.forEach((habitIdx) => {
+          const h = habits[habitIdx];
+          apiPost('/api/habits', {
+            chatId: CHAT_ID, id: h.id, name: h.name, icon: h.icon, goal: h.goal, freq: h.freq,
+            priority: h.priority, color: h.color, order: h.order,
+            reminderEnabled: h.reminderEnabled, reminderTime: h.reminderTime, reminderText: h.reminderText,
+          }).catch(() => {});
+        });
       }
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
@@ -673,12 +757,18 @@ function attachDragHandlers() {
 function toggleHabit(index) {
   const today = todayKey();
   const h = habits[index];
-  h.log[today] = !h.log[today];
+  const wasDone = !!h.log[today];
+  h.log[today] = !wasDone;
   if (!h.log[today]) delete h.log[today];
-  storageSet('habits', JSON.stringify(habits));
   renderHabits();
   haptic('medium');
-  if (h.log[today]) showToast(`${h.icon} ${h.name} — готово на сегодня!`);
+  if (h.log[today]) {
+    showToast(`${h.icon} ${h.name} — готово на сегодня!`);
+    checkNewAchievement(h);
+  }
+  apiPost('/api/habits/log', { habitId: h.id, date: today }).catch(() => {
+    showToast('Ошибка синхронизации с сервером');
+  });
 }
 function openHabitModal(index) {
   editingHabitIndex = index !== undefined ? index : null;
@@ -687,15 +777,32 @@ function openHabitModal(index) {
   selectedEmoji = h ? h.icon : HABIT_EMOJIS[0];
   selectedGoal = h ? h.goal : 'daily';
   selectedPriority = h ? (h.priority || 'medium') : 'high';
+  selectedColor = h ? (h.color || HABIT_COLOR_PALETTE[habits.length % HABIT_COLOR_PALETTE.length]) : HABIT_COLOR_PALETTE[habits.length % HABIT_COLOR_PALETTE.length];
+  selectedReminderEnabled = h ? !!h.reminderEnabled : false;
+  selectedReminderTime = h ? (h.reminderTime || '09:00') : '09:00';
   picker.innerHTML = HABIT_EMOJIS.map(e => `<div class="emoji-opt ${e===selectedEmoji?'selected':''}" onclick="pickEmoji('${e}')">${e}</div>`).join('');
+  document.getElementById('colorPicker').innerHTML = HABIT_COLOR_PALETTE.map(c => `<div class="color-opt ${c===selectedColor?'selected':''}" style="background:${c}" onclick="pickColor('${c}', this)"></div>`).join('');
   document.getElementById('habitNameInput').value = h ? h.name : '';
   document.getElementById('habitFreqInput').value = h ? (h.freq || 3) : 3;
   document.getElementById('habitModalTitle').textContent = h ? 'Изменить привычку' : 'Новая привычка';
   document.getElementById('habitDeleteBtn').style.display = h ? 'block' : 'none';
   document.getElementById('habitSuggestList').classList.remove('show');
+  document.getElementById('reminderToggle').checked = selectedReminderEnabled;
+  document.getElementById('reminderTimeInput').value = selectedReminderTime;
+  document.getElementById('reminderTextInput').value = h ? (h.reminderText || '') : '';
+  document.getElementById('reminderFields').classList.toggle('show', selectedReminderEnabled);
   pickGoal(selectedGoal);
   pickPriority(selectedPriority);
   document.getElementById('habitOverlay').classList.add('active');
+}
+function pickColor(c, el) {
+  selectedColor = c;
+  document.querySelectorAll('#colorPicker .color-opt').forEach(opt => opt.classList.remove('selected'));
+  el.classList.add('selected');
+}
+function onReminderToggle() {
+  selectedReminderEnabled = document.getElementById('reminderToggle').checked;
+  document.getElementById('reminderFields').classList.toggle('show', selectedReminderEnabled);
 }
 function pickEmoji(e) {
   selectedEmoji = e;
@@ -725,30 +832,48 @@ function pickPresetHabit(name, icon) {
   document.querySelectorAll('#emojiPicker .emoji-opt').forEach(el => el.classList.toggle('selected', el.textContent === icon));
   document.getElementById('habitSuggestList').classList.remove('show');
 }
-function saveHabit() {
+async function saveHabit() {
   const name = document.getElementById('habitNameInput').value.trim();
   if (!name) return;
   const freq = parseInt(document.getElementById('habitFreqInput').value) || 3;
-  if (editingHabitIndex !== null) {
-    const h = habits[editingHabitIndex];
-    h.name = name; h.icon = selectedEmoji; h.goal = selectedGoal; h.freq = freq; h.priority = selectedPriority;
-  } else {
-    habits.push({ name, icon: selectedEmoji, goal: selectedGoal, freq, priority: selectedPriority, order: habits.length, log: {} });
+  const reminderEnabled = document.getElementById('reminderToggle').checked;
+  const reminderTime = document.getElementById('reminderTimeInput').value;
+  const reminderText = document.getElementById('reminderTextInput').value.trim();
+  const payload = {
+    chatId: CHAT_ID, name, icon: selectedEmoji, goal: selectedGoal, freq,
+    priority: selectedPriority, color: selectedColor,
+    reminderEnabled, reminderTime, reminderText,
+    order: editingHabitIndex !== null ? habits[editingHabitIndex].order : habits.length,
+  };
+  if (editingHabitIndex !== null) payload.id = habits[editingHabitIndex].id;
+  try {
+    const result = await apiPost('/api/habits', payload);
+    if (editingHabitIndex !== null) {
+      Object.assign(habits[editingHabitIndex], payload);
+    } else {
+      habits.push({ ...payload, id: result.id, log: {} });
+    }
+    renderHabits();
+    closeModal('habitOverlay');
+    hapticNotify('success');
+    showToast('Сохранено');
+  } catch (e) {
+    showToast('Ошибка сохранения');
   }
-  storageSet('habits', JSON.stringify(habits));
-  renderHabits();
-  closeModal('habitOverlay');
-  hapticNotify('success');
-  showToast('Сохранено');
 }
-function deleteHabit() {
+async function deleteHabit() {
   if (editingHabitIndex === null) return;
-  habits.splice(editingHabitIndex, 1);
-  storageSet('habits', JSON.stringify(habits));
-  renderHabits();
-  closeModal('habitOverlay');
-  hapticNotify('warning');
-  showToast('Привычка удалена');
+  const habitId = habits[editingHabitIndex].id;
+  try {
+    await apiDelete(`/api/habits/${habitId}`);
+    habits.splice(editingHabitIndex, 1);
+    renderHabits();
+    closeModal('habitOverlay');
+    hapticNotify('warning');
+    showToast('Привычка удалена');
+  } catch (e) {
+    showToast('Ошибка удаления');
+  }
 }
 
 // ---------- Finance ----------
@@ -767,25 +892,35 @@ function pickCatIcon(e) {
   selectedCatIcon = e;
   document.querySelectorAll('#catPicker .emoji-opt').forEach(el => el.classList.toggle('selected', el.textContent === e));
 }
-function saveTx() {
+async function saveTx() {
   const amount = parseFloat(document.getElementById('txAmountInput').value);
   const cat = document.getElementById('txCatInput').value.trim() || (currentTxType === 'income' ? 'Доход' : 'Расход');
   if (!amount || amount <= 0) return;
-  transactions.unshift({ type: currentTxType, amount, category: cat, icon: currentTxType === 'expense' ? selectedCatIcon : '💵', date: new Date().toISOString() });
-  storageSet('transactions', JSON.stringify(transactions));
-  renderFinance();
-  renderStats();
-  closeModal('txOverlay');
-  hapticNotify('success');
-  showToast('Операция добавлена');
+  const icon = currentTxType === 'expense' ? selectedCatIcon : '💵';
+  try {
+    const result = await apiPost('/api/transactions', { chatId: CHAT_ID, type: currentTxType, amount, category: cat, icon });
+    transactions.unshift({ id: result.id, type: currentTxType, amount, category: cat, icon, date: new Date().toISOString() });
+    renderFinance();
+    renderStats();
+    closeModal('txOverlay');
+    hapticNotify('success');
+    showToast('Операция добавлена');
+  } catch (e) {
+    showToast('Ошибка сохранения');
+  }
 }
-function deleteTx(index) {
-  transactions.splice(index, 1);
-  storageSet('transactions', JSON.stringify(transactions));
-  renderFinance();
-  renderStats();
-  hapticNotify('warning');
-  showToast('Удалено');
+async function deleteTx(index) {
+  const tx = transactions[index];
+  try {
+    await apiDelete(`/api/transactions/${tx.id}`);
+    transactions.splice(index, 1);
+    renderFinance();
+    renderStats();
+    hapticNotify('warning');
+    showToast('Удалено');
+  } catch (e) {
+    showToast('Ошибка удаления');
+  }
 }
 function filteredTx() {
   if (currentPeriod === 'all') return transactions;
@@ -875,17 +1010,85 @@ function openBudgetModal(cat) {
   document.getElementById('budgetAmountInput').value = budgets[cat] || '';
   document.getElementById('budgetOverlay').classList.add('active');
 }
-function saveBudget() {
+async function saveBudget() {
   const val = parseFloat(document.getElementById('budgetAmountInput').value);
-  if (val > 0) budgets[editingBudgetCat] = val;
-  else delete budgets[editingBudgetCat];
-  storageSet('budgets', JSON.stringify(budgets));
-  renderBudgets();
-  closeModal('budgetOverlay');
-  showToast('Бюджет сохранён');
+  try {
+    await apiPost('/api/budgets', { chatId: CHAT_ID, category: editingBudgetCat, limit: val > 0 ? val : null });
+    if (val > 0) budgets[editingBudgetCat] = val;
+    else delete budgets[editingBudgetCat];
+    renderBudgets();
+    closeModal('budgetOverlay');
+    showToast('Бюджет сохранён');
+  } catch (e) {
+    showToast('Ошибка сохранения бюджета');
+  }
 }
 
 // ---------- Stats ----------
+function renderTrendChart() {
+  const el = document.getElementById('trendChart');
+  if (habits.length === 0) { el.innerHTML = '<div class="empty">Нет данных</div>'; return; }
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const key = todayKey(i);
+    let done = 0;
+    habits.forEach(h => { if (h.log[key]) done++; });
+    const pct = habits.length ? Math.round((done / habits.length) * 100) : 0;
+    days.push({ key, pct });
+  }
+  const max = 100;
+  el.innerHTML = `<div style="display:flex; align-items:flex-end; gap:3px; height:80px">${
+    days.map(d => `<div style="flex:1; display:flex; flex-direction:column; justify-content:flex-end; height:100%">
+      <div style="background:var(--amber); border-radius:3px 3px 0 0; height:${Math.max(4, (d.pct/max)*100)}%"></div>
+    </div>`).join('')
+  }</div><div style="display:flex; justify-content:space-between; margin-top:6px; font-size:10px; color:var(--hint)">
+    <span>14 дн. назад</span><span>сегодня</span>
+  </div>`;
+}
+function renderAchievements() {
+  const el = document.getElementById('achievementsCard');
+  const earned = [];
+  habits.forEach(h => {
+    const streak = calcStreak(h);
+    ACHIEVEMENTS.forEach(a => { if (streak >= a.days) earned.push({ ...a, habit: h.name, icon2: h.icon }); });
+  });
+  if (earned.length === 0) { el.innerHTML = '<div class="empty">Пока нет достижений — начни серию!</div>'; return; }
+  const unique = {};
+  earned.forEach(e => { unique[e.habit + e.days] = e; });
+  el.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:8px">${
+    Object.values(unique).map(e => `
+      <div style="background:rgba(245,166,35,0.12); border:1px solid rgba(245,166,35,0.3); border-radius:12px; padding:8px 12px; font-size:12px; display:flex; align-items:center; gap:6px">
+        <span style="font-size:16px">${e.icon}</span><span>${e.label} — ${e.icon2} ${e.habit}</span>
+      </div>`).join('')
+  }</div>`;
+}
+function renderBalanceTrend() {
+  const el = document.getElementById('balanceTrend');
+  const months = {};
+  transactions.forEach(t => {
+    const d = new Date(t.date);
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    if (!months[key]) months[key] = 0;
+    months[key] += t.type === 'income' ? t.amount : -t.amount;
+  });
+  const keys = Object.keys(months).sort().slice(-6);
+  if (keys.length === 0) { el.innerHTML = '<div class="empty">Нет данных</div>'; return; }
+  const maxAbs = Math.max(...keys.map(k => Math.abs(months[k])), 1);
+  el.innerHTML = `<div style="display:flex; align-items:center; gap:8px; height:90px">${
+    keys.map(k => {
+      const val = months[k];
+      const heightPct = Math.max(6, (Math.abs(val) / maxAbs) * 100);
+      const color = val >= 0 ? 'var(--teal)' : 'var(--coral)';
+      const [y, m] = k.split('-');
+      const label = new Date(Number(y), Number(m)-1).toLocaleDateString('ru-RU', { month: 'short' });
+      return `<div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; height:100%; justify-content:flex-end">
+        <div style="font-size:9px; color:var(--hint)" class="mono">${formatMoney(val).replace(' ₽','')}</div>
+        <div style="width:100%; background:${color}; border-radius:4px; height:${heightPct}%"></div>
+        <div style="font-size:10px; color:var(--hint)">${label}</div>
+      </div>`;
+    }).join('')
+  }</div>`;
+}
 function renderStats() {
   if (habits.length > 0) {
     let totalPossible = 0, totalDone = 0;
@@ -899,6 +1102,10 @@ function renderStats() {
     document.getElementById('statHabitPct').textContent = '—';
     document.getElementById('statBestStreak').textContent = '—';
   }
+
+  renderTrendChart();
+  renderAchievements();
+  renderBalanceTrend();
 
   const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
   const recent = transactions.filter(t => t.type === 'expense' && new Date(t.date) >= cutoff);
@@ -939,30 +1146,6 @@ function exportData() {
   URL.revokeObjectURL(url);
   showToast('Бэкап скачан');
 }
-document.getElementById('importFile').addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = async (ev) => {
-    try {
-      const data = JSON.parse(ev.target.result);
-      habits = data.habits || [];
-      transactions = data.transactions || [];
-      budgets = data.budgets || {};
-      await storageSet('habits', JSON.stringify(habits));
-      await storageSet('transactions', JSON.stringify(transactions));
-      await storageSet('budgets', JSON.stringify(budgets));
-      renderHabits(); renderFinance(); renderStats();
-      hapticNotify('success');
-      showToast('Бэкап загружен');
-    } catch {
-      hapticNotify('error');
-      showToast('Не удалось прочитать файл');
-    }
-  };
-  reader.readAsText(file);
-  e.target.value = '';
-});
 function confirmReset() {
   if (tg?.showConfirm) {
     tg.showConfirm('Удалить все данные без возможности восстановления?', (ok) => { if (ok) resetData(); });
@@ -971,13 +1154,16 @@ function confirmReset() {
   }
 }
 async function resetData() {
-  habits = []; transactions = []; budgets = {};
-  await storageSet('habits', '[]');
-  await storageSet('transactions', '[]');
-  await storageSet('budgets', '{}');
-  renderHabits(); renderFinance(); renderStats();
-  hapticNotify('warning');
-  showToast('Все данные удалены');
+  try {
+    await Promise.all(habits.map(h => apiDelete(`/api/habits/${h.id}`)));
+    await Promise.all(transactions.map(t => apiDelete(`/api/transactions/${t.id}`)));
+    habits = []; transactions = []; budgets = {};
+    renderHabits(); renderFinance(); renderStats();
+    hapticNotify('warning');
+    showToast('Все данные удалены');
+  } catch (e) {
+    showToast('Ошибка при удалении данных');
+  }
 }
 
 // ---------- Modal helpers ----------
