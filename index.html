@@ -470,13 +470,25 @@ function renderQuote() {
   el.innerHTML = `<div style="font-size:14px; line-height:1.5; font-weight:600">"${q.text}"</div><div style="margin-top:8px; font-size:12px; color:var(--hint); font-weight:700">— ${q.author}</div>`;
 }
 const OWNER_ID = 1085883981;
+const OWNER_CODE = 'treker1085'; // секретный код на случай если Telegram не передаёт ID
 function isOwner() {
   const uid = tg?.initDataUnsafe?.user?.id;
-  return Number(uid) === OWNER_ID;
+  if (Number(uid) === OWNER_ID) return true;
+  return localStorage.getItem('owner_unlocked') === '1';
 }
 function applySettingsVisibility() {
   const el = document.getElementById('navSettings');
   el.style.display = isOwner() ? '' : 'none';
+}
+function tryUnlockOwner() {
+  const code = prompt('Введи код доступа:');
+  if (code === OWNER_CODE) {
+    localStorage.setItem('owner_unlocked', '1');
+    applySettingsVisibility();
+    showToast('Доступ открыт');
+  } else if (code !== null) {
+    showToast('Неверный код');
+  }
 }
 // Применяем сразу, и ещё раз чуть позже — на случай если Telegram
 // отдаёт initDataUnsafe с задержкой в некоторых клиентах
@@ -489,6 +501,9 @@ document.getElementById('debugId').textContent =
   ' | user: ' + JSON.stringify(tg?.initDataUnsafe?.user ?? null) +
   ' | platform: ' + (tg?.platform ?? '?') +
   ' | version: ' + (tg?.version ?? '?');
+document.getElementById('debugId').addEventListener('click', tryUnlockOwner);
+document.getElementById('debugId').style.cursor = 'pointer';
+document.getElementById('debugId').title = 'Тапни для входа как владелец';
 
 async function init() {
   const h = await storageGet('habits');
