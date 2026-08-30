@@ -231,7 +231,7 @@ input[type=file] { display: none; }
 
 <h1>Мой трекер</h1>
 <div class="subtitle" id="pageSubtitle">Привычки и финансы в одном месте</div>
-<div class="subtitle" id="debugId" style="margin-top:-14px; opacity:0.5; font-size:11px"></div>
+<div class="subtitle" id="debugId" style="margin-top:2px; opacity:0.6; font-size:10px; word-break:break-all; line-height:1.4"></div>
 
 <!-- HABITS VIEW -->
 <div class="view active" id="habits">
@@ -483,7 +483,12 @@ function applySettingsVisibility() {
 applySettingsVisibility();
 setTimeout(applySettingsVisibility, 300);
 setTimeout(applySettingsVisibility, 1000);
-document.getElementById('debugId').textContent = 'ID: ' + (tg?.initDataUnsafe?.user?.id ?? 'нет данных');
+document.getElementById('debugId').textContent =
+  'tg: ' + (tg ? 'да' : 'НЕТ') +
+  ' | initData длина: ' + (tg?.initData?.length ?? 0) +
+  ' | user: ' + JSON.stringify(tg?.initDataUnsafe?.user ?? null) +
+  ' | platform: ' + (tg?.platform ?? '?') +
+  ' | version: ' + (tg?.version ?? '?');
 
 async function init() {
   const h = await storageGet('habits');
