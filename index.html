@@ -393,10 +393,8 @@ function haptic(type) { tg?.HapticFeedback?.impactOccurred(type || 'light'); }
 function hapticNotify(type) { tg?.HapticFeedback?.notificationOccurred(type || 'success'); }
 
 // ---------- API (бэкенд на Replit: SQLite + REST) ----------
-// API_BASE указывает на тот же хост, где крутится bot.py (HTTP-сервер на PORT)
-const API_BASE = window.location.origin.includes('github.io')
-  ? 'https://tracker-app--rlunockin.replit.app'
-  : window.location.origin;
+// Всё (сайт + API) теперь крутится в одном процессе bot.py на одном домене
+const API_BASE = window.location.origin;
 
 function getChatId() {
   // 1) из query-параметра ?uid=..., который добавляет bot.py в ссылку
